@@ -1,7 +1,15 @@
 # clark-agent
 
-A small, typed, hookable agent loop. Provider-agnostic, sandbox-agnostic,
-tooling-agnostic.
+A small, typed, hookable agent loop — provider-agnostic, sandbox-agnostic, tooling-agnostic.
+
+## What This Gives You
+
+- **Typed agent loop** — `context → LLM → tool batch → results → repeat`, with clean termination semantics
+- **Plugin system** — 6 capability traits (`BeforeToolCall`, `AfterToolCall`, `ContextTransform`, `EventObserver`, `SteeringSource`, `FollowUpSource`) for cross-cutting extension
+- **Stream abstraction** — `StreamFn` trait: swap LLM providers, inject fixtures, replay scenarios, proxy remotely
+- **Tool registry** — `AgentTool` trait + `ToolRegistry`; tools own their schema, validation, and execution
+- **Builder API** — `AgentBuilder` composes stream, tools, plugins, and config in one call
+- **Cancellation** — `CancellationToken` for graceful shutdown
 
 ## Shape
 
@@ -9,48 +17,9 @@ tooling-agnostic.
 context → LLM (StreamFn) → tool batch → results appended → repeat
 ```
 
-Termination is a tool decision (`ToolResult::terminate = true`, unanimous
-across the batch). The runtime owns execution and event emission; tools
-own semantics; plugins own cross-cutting extension.
+Termination is a tool decision (`ToolResult::terminate = true`, unanimous across the batch). The runtime owns execution and event emission; tools own semantics; plugins own cross-cutting extension.
 
-## Layers
-
-- **`types`** — `AgentMessage`, content blocks, `StopReason`. Conversation
-  is `Vec<AgentMessage>`. Apps extend via `AgentMessage::Custom` or by
-  wrapping in their own enum.
-- **`event`** — `AgentEvent` enum + `EventSink` trait. Single sink, typed
-  events. Streamed and final delivery use the same enum. `ChannelSink`,
-  `FanOutSink`, `NoopSink` provided.
-- **`tool`** — `AgentTool` trait + `ToolRegistry`. Tools own their schema,
-  validation, and execution. The loop only dispatches.
-- **`stream`** — `StreamFn` trait. Swappable LLM transport: real provider,
-  fixture replay, scripted scenario, remote proxy.
-- **`plugin`** — `Plugin` + capability traits (`BeforeToolCall`,
-  `AfterToolCall`, `ContextTransform`, `EventObserver`, `SteeringSource`,
-  `FollowUpSource`). Cross-cutting concerns register here, not inline in
-  the loop.
-- **`config`** — `LoopConfig` + `AgentBuilder` for assembling everything.
-- **`run`** — `run` / `run_continue` — the canonical loop. Pure functions.
-- **`exec`** — tool execution: parallel + sequential dispatch, hook plumbing.
-- **`budget`** — default token-budget context transform.
-- **`error`** — typed error enums.
-
-## Plugin extension points
-
-| Trait              | When it runs                                                             |
-| ------------------ | ------------------------------------------------------------------------ |
-| `BeforeToolCall`   | After argument validation, before `tool.execute`. May block with reason. |
-| `AfterToolCall`    | After `tool.execute`. May override result, mark error, vote terminate.   |
-| `ContextTransform` | Before each LLM call. Window management, redaction.                      |
-| `EventObserver`    | On every `AgentEvent`. Logging, telemetry, persistence.                  |
-| `SteeringSource`   | Between batches. Inject extra messages mid-run.                          |
-| `FollowUpSource`   | After natural stop. Re-start the agent if more is queued.                |
-
-A single struct can implement multiple capability traits — declare the
-set via `Plugin::capabilities()` and register once with
-`AgentBuilder::plugin()`.
-
-## Quick start
+## Quick Start
 
 ```rust
 use std::sync::Arc;
@@ -78,84 +47,74 @@ let outcome = clark_agent::run(
     AgentContext::new("You are a helpful assistant."),
     &config,
     CancellationToken::new(),
-).await?;
+).await;
 ```
+
+## Layers
+
+| Layer | Purpose |
+|-------|---------|
+| `types` | `AgentMessage`, content blocks, `StopReason` |
+| `event` | `AgentEvent` enum + `EventSink` trait (ChannelSink, FanOutSink, NoopSink) |
+| `tool` | `AgentTool` trait + `ToolRegistry` |
+| `stream` | `StreamFn` trait — swappable LLM transport |
+| `plugin` | `Plugin` + 6 capability traits |
+| `config` | `LoopConfig` + `AgentBuilder` |
+| `run` | `run` / `run_continue` — canonical loop |
+| `exec` | Parallel + sequential tool dispatch, hook plumbing |
+| `budget` | Token-budget context transform |
+
+## Plugin Extension Points
+
+| Trait | When it runs |
+|-------|-------------|
+| `BeforeToolCall` | After validation, before `tool.execute`. May block. |
+| `AfterToolCall` | After `tool.execute`. May override result, vote terminate. |
+| `ContextTransform` | Before each LLM call. Window management, redaction. |
+| `EventObserver` | On every `AgentEvent`. Logging, telemetry, persistence. |
+| `SteeringSource` | Between batches. Inject extra messages mid-run. |
+| `FollowUpSource` | After natural stop. Re-start if more is queued. |
 
 ## Examples
 
-Run the smallest possible loop with a scripted transport:
-
-```sh
+```bash
+# Minimal agent with fixture provider
 cargo run --example minimal
-```
 
-Run a two-turn loop where the model calls a typed `echo` tool:
-
-```sh
+# Tool call demo
 cargo run --example tool_call
 ```
 
-Real integrations provide their own `StreamFn` implementation for an LLM
-provider and register application tools through `AgentTool` or
-`TypedAgentTool`.
+## How It Fits
 
-## Mid-run steering (`steer()`)
+- **[co-captain-git-agent](https://github.com/SuperInstance/co-captain-git-agent)** — Fleet liaison built on clark-agent's loop pattern
+- **[cocapn-health-rs](https://github.com/SuperInstance/cocapn-health-rs)** — Health check tools registered in the tool registry
+- **[capability-spec-rs](https://github.com/SuperInstance/capability-spec-rs)** — Capability specs define what tools an agent exposes
+- **[categorical-agents](https://github.com/SuperInstance/categorical-agents)** — Category-theoretic composition maps to plugin composition
 
-```rust
-let (steering, handle) = clark_agent::plugin::ChannelSteering::new();
-let config = AgentBuilder::new()
-    .stream(provider)
-    .tools(registry)
-    .steering_arc(steering)
-    .build()?;
+## Testing
 
-// In another task: inject a message between batches.
-handle.steer(AgentMessage::User {
-    content: UserContent::Text("actually, focus on /etc instead".into()),
-    timestamp: None,
-})?;
+26 integration tests covering agent loop, tool dispatch, plugin hooks, graceful turn limits, sandbox isolation, max token recovery, sibling abort, and message persistence round-trips.
+
+```bash
+cargo test
 ```
 
-## Design rules
+## Installation
 
-- **One canonical core.** `run` / `run_continue` are pure functions, not
-  methods on a god-class.
-- **Hooks are typed, narrow, side-effect-free.** No I/O in `BeforeToolCall`
-  or `AfterToolCall` — those belong to the tool's own `execute`.
-- **Failure is a context event.** Tool errors become tool result content
-  with `is_error: true`. The loop appends and continues. Only `LoopError`
-  (stream transport unrecoverable / aborted) ends the run.
-- **Termination requires unanimity.** A batch ends the run only when
-  every finalized tool result votes `terminate: true`. One tool wanting
-  to stop does not stop the batch.
-- **Strongly typed contracts.** Discriminators are enums; payloads are
-  typed structs; field-name string lookups (`obj["role"]`) are forbidden
-  in primary contracts. `serde_json::Value` only at open-by-design leaves
-  (provider extras, custom message payloads, tool arguments).
+```toml
+[dependencies]
+clark-agent = { git = "https://github.com/SuperInstance/clark-agent" }
+```
 
-## Open-source boundary
-
-`clark-agent` is the reusable loop crate: typed history, tool dispatch,
-provider transport traits, events, and extension hooks. Clark product wiring
-belongs in downstream crates such as `clark-agent-bridge`.
-
-The current 0.1 line still includes a small compatibility layer for Clark's
-legacy delivery/planning tool names (`message_result`, `message_ask`, `plan`)
-so existing Clark integrations keep working while the public API stabilizes.
-New product-specific behavior should be implemented as bridge plugins or
-tool definitions rather than added to this core crate.
-
-## Release checks
-
-```sh
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
-cargo publish --dry-run
+```bash
+git clone https://github.com/SuperInstance/clark-agent.git
+cd clark-agent
+cargo build
 ```
 
 ## License
 
-Apache-2.0.
+MIT
 
-Part of the [SuperInstance OpenConstruct](https://github.com/SuperInstance/OpenConstruct) ecosystem.
+Part of the [SuperInstance OpenConstruct](https://github.com/SuperInstance) ecosystem.
