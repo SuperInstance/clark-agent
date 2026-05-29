@@ -157,3 +157,5 @@ cargo publish --dry-run
 ## License
 
 Apache-2.0.
+
+Part of the [SuperInstance OpenConstruct](https://github.com/SuperInstance/OpenConstruct) ecosystem.
